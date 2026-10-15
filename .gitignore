@@ -1,7 +1,11 @@
-node_modules
+node_modules/
+dist/
+dist-ssr/
+coverage/
+logs/
+*.log
 .env
 .env.*
 !.env.example
-coverage
-logs
-*.log
+.local
+*.local
