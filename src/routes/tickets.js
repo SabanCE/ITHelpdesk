@@ -1,0 +1,517 @@
+
+const express = require('express');
+const { requireRole } = require('../middleware/auth');
+
+const router = express.Router();
+
+// GET /api/tickets
+
+router.get('/', async (req, res) => {
+    try {
+        const { status, priority } = req.query;
+
+        const allowedStatuses = [
+            'open',
+            'in_progress',
+            'resolved',
+            'closed'
+        ];
+
+        const allowedPriorities = ['low', 'medium', 'high'];
+
+        if (status && !allowedStatuses.includes(status)) {
+            return res.status(400).json({
+                message: 'Geçersiz durum filtresi.'
+            });
+        }
+
+        if (priority && !allowedPriorities.includes(priority)) {
+            return res.status(400).json({
+                message: 'Geçersiz öncelik filtresi.'
+            });
+        }
+
+        const pool = req.app.locals.dbPool;
+        const request = pool.request();
+        const conditions = [];
+
+        if (req.user.role === 'employee') {
+            conditions.push('t.CreatedBy = @currentUserId');
+            request.input('currentUserId', req.user.id);
+        }
+
+        if (status === 'open') {
+            // Açık: henüz çözülmemiş tüm ticket'lar
+            conditions.push(
+                "t.Status IN ('open', 'in_progress')"
+            );
+        } else if (status === 'closed' || status === 'resolved') {
+            // Kapalı: çözülmüş ticket'lar
+            conditions.push("t.Status = 'resolved'");
+        } else if (status === 'in_progress') {
+            conditions.push("t.Status = @status");
+            request.input('status', status);
+        }
+
+        if (priority) {
+            conditions.push('t.Priority = @priority');
+            request.input('priority', priority);
+        }
+
+        const whereClause = conditions.length > 0
+            ? `WHERE ${conditions.join(' AND ')}`
+            : '';
+
+        const result = await request.query(`
+            SELECT
+                t.Id,
+                t.Title,
+                t.Description,
+                t.Status,
+                t.Priority,
+                t.AssignedTo,
+                t.CreatedAt,
+                resolution.ResolvedAt,
+                employee.Name AS EmployeeName,
+                itstaff.Name AS AssignedITStaff
+            FROM dbo.Tickets AS t
+            INNER JOIN dbo.Users AS employee
+                ON t.CreatedBy = employee.Id
+            LEFT JOIN dbo.Users AS itstaff
+                ON t.AssignedTo = itstaff.Id
+            OUTER APPLY (
+                SELECT MIN(h.CreatedAt) AS ResolvedAt
+                FROM dbo.TicketHistory AS h
+                WHERE h.TicketId = t.Id
+                  AND h.NewStatus = 'resolved'
+            ) AS resolution
+            ${whereClause}
+            ORDER BY t.CreatedAt DESC;
+        `);
+
+        res.json(result.recordset);
+    } catch (error) {
+        console.error('Ticket listesi alınamadı:', error.message);
+
+        res.status(500).json({
+            message: 'Ticket listesi alınırken bir hata oluştu.'
+        });
+    }
+});
+
+
+
+router.get('/:id', async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+
+        if (!Number.isInteger(id) || id <= 0) {
+            return res.status(400).json({
+                message: 'Geçerli bir ticket ID girilmelidir.'
+            });
+        }
+
+        const pool = req.app.locals.dbPool;
+
+        const request = pool.request()
+            .input('id', id);
+        let ownerCondition = '';
+
+        if (req.user.role === 'employee') {
+            ownerCondition = 'AND t.CreatedBy = @currentUserId';
+            request.input('currentUserId', req.user.id);
+        }
+
+        const result = await request
+            .query(`
+                SELECT
+                    t.Id,
+                    t.Title,
+                    t.Description,
+                    t.Status,
+                    t.Priority,
+                    t.AssignedTo,
+                    t.CreatedAt,
+                    resolution.ResolvedAt,
+                    employee.Name AS EmployeeName,
+                    itstaff.Name AS AssignedITStaff
+                FROM dbo.Tickets AS t
+                INNER JOIN dbo.Users AS employee
+                    ON t.CreatedBy = employee.Id
+                LEFT JOIN dbo.Users AS itstaff
+                    ON t.AssignedTo = itstaff.Id
+                OUTER APPLY (
+                    SELECT MIN(h.CreatedAt) AS ResolvedAt
+                    FROM dbo.TicketHistory AS h
+                    WHERE h.TicketId = t.Id
+                      AND h.NewStatus = 'resolved'
+                ) AS resolution
+                WHERE t.Id = @id
+                ${ownerCondition};
+            `);
+
+        if (result.recordset.length === 0) {
+            return res.status(404).json({
+                message: 'Ticket bulunamadı.'
+            });
+        }
+
+        res.json(result.recordset[0]);
+    } catch (error) {
+        console.error('Ticket alınamadı:', error.message);
+
+        res.status(500).json({
+            message: 'Ticket alınırken bir hata oluştu.'
+        });
+    }
+});
+
+
+router.post('/', async (req, res) => {
+    try {
+        const { title, description, priority, createdBy: requestedCreatedBy } = req.body ?? {};
+        const canCreateForEmployee = ['it_staff', 'it_admin'].includes(req.user.role);
+        const createdBy = canCreateForEmployee
+            ? requestedCreatedBy
+            : req.user.id;
+
+        if (
+            typeof title !== 'string' ||
+            !title.trim() ||
+            typeof description !== 'string' ||
+            !description.trim() ||
+            !Number.isInteger(createdBy) ||
+            createdBy <= 0
+        ) {
+            return res.status(400).json({
+                message: canCreateForEmployee
+                    ? 'Başlık, açıklama ve talep sahibi çalışan zorunludur.'
+                    : 'Başlık ve açıklama zorunludur.'
+            });
+        }
+
+        const allowedPriorities = ['low', 'medium', 'high'];
+        const selectedPriority = priority ?? 'medium';
+
+        if (!allowedPriorities.includes(selectedPriority)) {
+            return res.status(400).json({
+                message: 'Öncelik low, medium veya high olmalıdır.'
+            });
+        }
+
+        const pool = req.app.locals.dbPool;
+
+        const employeeResult = await pool.request()
+            .input('createdBy', createdBy)
+            .query(`
+                SELECT Id
+                FROM dbo.Users
+                WHERE Id = @createdBy
+                  AND Role = 'employee';
+            `);
+
+        if (employeeResult.recordset.length === 0) {
+            return res.status(400).json({
+                message: 'Talep sahibi olarak geçerli bir çalışan seçilmelidir.'
+            });
+        }
+
+        const result = await pool.request()
+            .input('title', title.trim())
+            .input('description', description.trim())
+            .input('priority', selectedPriority)
+            .input('createdBy', createdBy)
+            .query(`
+                INSERT INTO dbo.Tickets
+                    (Title, Description, Priority, CreatedBy)
+                OUTPUT
+                    INSERTED.Id,
+                    INSERTED.Title,
+                    INSERTED.Description,
+                    INSERTED.Status,
+                    INSERTED.Priority,
+                    INSERTED.CreatedBy,
+                    INSERTED.CreatedAt
+                VALUES
+                    (@title, @description, @priority, @createdBy);
+            `);
+
+        res.status(201).json(result.recordset[0]);
+    } catch (error) {
+        console.error('Ticket oluşturulamadı:', error.message);
+
+        res.status(500).json({
+            message: 'Ticket oluşturulurken bir hata oluştu.'
+        });
+    }
+});
+
+
+
+router.patch('/:id', requireRole('it_staff', 'it_admin'), async (req, res) => {
+    const id = Number(req.params.id);
+    const { status, priority, assignedTo } = req.body ?? {};
+    const changedBy = req.user.id;
+
+    if (!Number.isInteger(id) || id <= 0) {
+        return res.status(400).json({
+            message: 'Geçerli bir ticket ID girilmelidir.'
+        });
+    }
+
+    const allowedStatuses = ['open', 'in_progress', 'resolved'];
+    const allowedPriorities = ['low', 'medium', 'high'];
+
+    if (status === undefined && priority === undefined &&
+        assignedTo === undefined) {
+        return res.status(400).json({
+            message: 'Güncellenecek bir alan göndermelisin.'
+        });
+    }
+
+    if (status !== undefined && !allowedStatuses.includes(status)) {
+        return res.status(400).json({
+            message: 'Geçersiz durum değeri.'
+        });
+    }
+
+    if (priority !== undefined &&
+        !allowedPriorities.includes(priority)) {
+        return res.status(400).json({
+            message: 'Geçersiz öncelik değeri.'
+        });
+    }
+
+    if (
+        assignedTo !== undefined &&
+        assignedTo !== null &&
+        (!Number.isInteger(assignedTo) || assignedTo <= 0)
+    ) {
+        return res.status(400).json({
+            message: 'assignedTo pozitif bir kullanıcı ID veya null olmalıdır.'
+        });
+    }
+
+    if (assignedTo !== undefined && req.user.role !== 'it_admin') {
+        return res.status(403).json({
+            message: 'Talep personeli atamasını yalnızca IT yöneticisi yapabilir.'
+        });
+    }
+
+    const pool = req.app.locals.dbPool;
+    const transaction = new (require('mssql/msnodesqlv8').Transaction)(pool);
+
+    try {
+        await transaction.begin();
+
+        // Ticket'ı oku ve transaction boyunca kilitle
+        const currentResult = await transaction.request()
+            .input('id', id)
+            .query(`
+                SELECT
+                    ticket.Id,
+                    ticket.Status,
+                    resolution.ResolvedAt
+                FROM dbo.Tickets AS ticket WITH (UPDLOCK, ROWLOCK)
+                OUTER APPLY (
+                    SELECT MIN(h.CreatedAt) AS ResolvedAt
+                    FROM dbo.TicketHistory AS h
+                    WHERE h.TicketId = ticket.Id
+                      AND h.NewStatus = 'resolved'
+                ) AS resolution
+                WHERE ticket.Id = @id;
+            `);
+
+        if (currentResult.recordset.length === 0) {
+            await transaction.rollback();
+
+            return res.status(404).json({
+                message: 'Ticket bulunamadı.'
+            });
+        }
+
+        const oldStatus = currentResult.recordset[0].Status;
+        let resolvedAt = currentResult.recordset[0].ResolvedAt ?? null;
+
+        if (status !== undefined) {
+            const staffResult = await transaction.request()
+                .input('changedBy', changedBy)
+                .query(`
+                    SELECT Id
+                    FROM dbo.Users
+                    WHERE Id = @changedBy
+                      AND Role IN ('it_staff', 'it_admin');
+                `);
+
+            if (staffResult.recordset.length === 0) {
+                await transaction.rollback();
+
+                return res.status(400).json({
+                    message: 'Durumu değiştiren IT personeli bulunamadı.'
+                });
+            }
+        }
+
+        if (assignedTo !== undefined && assignedTo !== null) {
+            const assignedResult = await transaction.request()
+                .input('assignedTo', assignedTo)
+                .query(`
+                    SELECT Id
+                    FROM dbo.Users
+                    WHERE Id = @assignedTo
+                      AND Role = 'it_staff';
+                `);
+
+            if (assignedResult.recordset.length === 0) {
+                await transaction.rollback();
+
+                return res.status(400).json({
+                    message: 'Atanacak IT personeli bulunamadı.'
+                });
+            }
+        }
+
+        const updates = [];
+        const request = transaction.request();
+
+        request.input('id', id);
+
+        if (status !== undefined) {
+            updates.push('Status = @status');
+            request.input('status', status);
+        }
+
+        if (priority !== undefined) {
+            updates.push('Priority = @priority');
+            request.input('priority', priority);
+        }
+
+        if (assignedTo !== undefined) {
+            updates.push('AssignedTo = @assignedTo');
+            request.input('assignedTo', assignedTo);
+        }
+
+        const updateResult = await request.query(`
+            UPDATE dbo.Tickets
+            SET ${updates.join(', ')}
+            OUTPUT
+                INSERTED.Id,
+                INSERTED.Title,
+                INSERTED.Description,
+                INSERTED.Status,
+                INSERTED.Priority,
+                INSERTED.CreatedBy,
+                INSERTED.AssignedTo,
+                INSERTED.CreatedAt
+            WHERE Id = @id;
+        `);
+
+        // Yalnızca durum gerçekten değiştiyse geçmişe ekle
+        if (status !== undefined && oldStatus !== status) {
+            await transaction.request()
+                .input('ticketId', id)
+                .input('changedBy', changedBy)
+                .input('oldStatus', oldStatus)
+                .input('newStatus', status)
+                .query(`
+                    INSERT INTO dbo.TicketHistory
+                        (TicketId, ChangedBy, OldStatus, NewStatus)
+                    VALUES
+                        (@ticketId, @changedBy, @oldStatus, @newStatus);
+                `);
+
+            if (status === 'resolved') {
+                const resolutionResult = await transaction.request()
+                    .input('ticketId', id)
+                    .query(`
+                        SELECT MIN(CreatedAt) AS ResolvedAt
+                        FROM dbo.TicketHistory
+                        WHERE TicketId = @ticketId
+                          AND NewStatus = 'resolved';
+                    `);
+                resolvedAt = resolutionResult.recordset[0].ResolvedAt;
+            }
+        }
+
+        await transaction.commit();
+
+        res.json({
+            ...updateResult.recordset[0],
+            ResolvedAt: resolvedAt
+        });
+    } catch (error) {
+        try {
+            await transaction.rollback();
+        } catch (rollbackError) {
+            console.error('Transaction geri alınamadı:',
+                rollbackError.message);
+        }
+
+        console.error('Ticket güncellenemedi:', error.message);
+
+        res.status(500).json({
+            message: 'Ticket güncellenirken bir hata oluştu.'
+        });
+    }
+});
+
+
+router.get('/:id/history', async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+
+        if (!Number.isInteger(id) || id <= 0) {
+            return res.status(400).json({
+                message: 'Geçerli bir ticket ID girilmelidir.'
+            });
+        }
+
+        const pool = req.app.locals.dbPool;
+
+        const request = pool.request()
+            .input('ticketId', id);
+        let ownerCondition = '';
+
+        if (req.user.role === 'employee') {
+            ownerCondition = `
+                AND EXISTS (
+                    SELECT 1
+                    FROM dbo.Tickets AS t
+                    WHERE t.Id = h.TicketId
+                      AND t.CreatedBy = @currentUserId
+                )
+            `;
+            request.input('currentUserId', req.user.id);
+        }
+
+        const result = await request
+            .query(`
+                SELECT
+                    h.Id,
+                    h.TicketId,
+                    h.OldStatus,
+                    h.NewStatus,
+                    h.CreatedAt,
+                    u.Name AS ChangedByName
+                FROM dbo.TicketHistory AS h
+                INNER JOIN dbo.Users AS u
+                    ON h.ChangedBy = u.Id
+                WHERE h.TicketId = @ticketId
+                ${ownerCondition}
+                ORDER BY h.CreatedAt DESC, h.Id DESC;
+            `);
+
+        res.json(result.recordset);
+    } catch (error) {
+        console.error('Ticket geçmişi alınamadı:', error.message);
+
+        res.status(500).json({
+            message: 'Ticket geçmişi alınırken bir hata oluştu.'
+        });
+    }
+});
+
+
+
+
+module.exports = router;
