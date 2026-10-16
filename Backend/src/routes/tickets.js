@@ -1,6 +1,8 @@
 
 const express = require('express');
 const { requireRole } = require('../middleware/auth');
+const sql = require('mssql/msnodesqlv8');
+const { dispatchUnassignedTickets } = require('../ticketAssignment');
 
 const router = express.Router();
 
@@ -49,7 +51,7 @@ router.get('/', async (req, res) => {
             // Kapalı: çözülmüş ticket'lar
             conditions.push("t.Status = 'resolved'");
         } else if (status === 'in_progress') {
-            conditions.push("t.Status = @status");
+            conditions.push("t.Status = @status AND t.AssignedTo IS NOT NULL");
             request.input('status', status);
         }
 
@@ -67,7 +69,11 @@ router.get('/', async (req, res) => {
                 t.Id,
                 t.Title,
                 t.Description,
-                t.Status,
+                CASE
+                    WHEN t.AssignedTo IS NULL AND t.Status = 'in_progress'
+                        THEN 'open'
+                    ELSE t.Status
+                END AS Status,
                 t.Priority,
                 t.AssignedTo,
                 t.CreatedAt,
@@ -99,8 +105,6 @@ router.get('/', async (req, res) => {
     }
 });
 
-
-
 router.get('/:id', async (req, res) => {
     try {
         const id = Number(req.params.id);
@@ -128,7 +132,11 @@ router.get('/:id', async (req, res) => {
                     t.Id,
                     t.Title,
                     t.Description,
-                    t.Status,
+                    CASE
+                        WHEN t.AssignedTo IS NULL AND t.Status = 'in_progress'
+                            THEN 'open'
+                        ELSE t.Status
+                    END AS Status,
                     t.Priority,
                     t.AssignedTo,
                     t.CreatedAt,
@@ -168,6 +176,7 @@ router.get('/:id', async (req, res) => {
 
 
 router.post('/', async (req, res) => {
+    let transaction;
     try {
         const { title, description, priority, createdBy: requestedCreatedBy } = req.body ?? {};
         const canCreateForEmployee = ['it_staff', 'it_admin'].includes(req.user.role);
@@ -200,8 +209,10 @@ router.post('/', async (req, res) => {
         }
 
         const pool = req.app.locals.dbPool;
+        transaction = new sql.Transaction(pool);
+        await transaction.begin();
 
-        const employeeResult = await pool.request()
+        const employeeResult = await transaction.request()
             .input('createdBy', createdBy)
             .query(`
                 SELECT Id
@@ -211,12 +222,13 @@ router.post('/', async (req, res) => {
             `);
 
         if (employeeResult.recordset.length === 0) {
+            await transaction.rollback();
             return res.status(400).json({
                 message: 'Talep sahibi olarak geçerli bir çalışan seçilmelidir.'
             });
         }
 
-        const result = await pool.request()
+        const result = await transaction.request()
             .input('title', title.trim())
             .input('description', description.trim())
             .input('priority', selectedPriority)
@@ -236,8 +248,39 @@ router.post('/', async (req, res) => {
                     (@title, @description, @priority, @createdBy);
             `);
 
-        res.status(201).json(result.recordset[0]);
+        await dispatchUnassignedTickets(pool, req.user.id, transaction);
+        const currentTicket = await transaction.request()
+            .input('id', result.recordset[0].Id)
+            .query(`
+                    SELECT
+                        ticket.Id,
+                        ticket.Title,
+                        ticket.Description,
+                        ticket.Status,
+                        ticket.Priority,
+                        ticket.CreatedBy,
+                        ticket.AssignedTo,
+                        ticket.CreatedAt,
+                        employee.Name AS EmployeeName,
+                        itstaff.Name AS AssignedITStaff
+                    FROM dbo.Tickets AS ticket
+                    INNER JOIN dbo.Users AS employee
+                        ON employee.Id = ticket.CreatedBy
+                    LEFT JOIN dbo.Users AS itstaff
+                        ON itstaff.Id = ticket.AssignedTo
+                    WHERE ticket.Id = @id;
+            `);
+
+        await transaction.commit();
+        res.status(201).json(currentTicket.recordset[0]);
     } catch (error) {
+        if (transaction) {
+            try {
+                await transaction.rollback();
+            } catch (rollbackError) {
+                console.error('Ticket oluşturma transaction geri alınamadı:', rollbackError.message);
+            }
+        }
         console.error('Ticket oluşturulamadı:', error.message);
 
         res.status(500).json({
@@ -292,14 +335,18 @@ router.patch('/:id', requireRole('it_staff', 'it_admin'), async (req, res) => {
         });
     }
 
-    if (assignedTo !== undefined && req.user.role !== 'it_admin') {
+    if (
+        assignedTo !== undefined
+        && req.user.role !== 'it_admin'
+        && !(req.user.role === 'it_staff' && assignedTo === null)
+    ) {
         return res.status(403).json({
-            message: 'Talep personeli atamasını yalnızca IT yöneticisi yapabilir.'
+            message: 'Talep personelini yalnızca IT yöneticisi atayabilir; personel kendi ticketını bırakabilir.'
         });
     }
 
     const pool = req.app.locals.dbPool;
-    const transaction = new (require('mssql/msnodesqlv8').Transaction)(pool);
+    const transaction = new sql.Transaction(pool);
 
     try {
         await transaction.begin();
@@ -311,6 +358,7 @@ router.patch('/:id', requireRole('it_staff', 'it_admin'), async (req, res) => {
                 SELECT
                     ticket.Id,
                     ticket.Status,
+                    ticket.AssignedTo,
                     resolution.ResolvedAt
                 FROM dbo.Tickets AS ticket WITH (UPDLOCK, ROWLOCK)
                 OUTER APPLY (
@@ -331,7 +379,31 @@ router.patch('/:id', requireRole('it_staff', 'it_admin'), async (req, res) => {
         }
 
         const oldStatus = currentResult.recordset[0].Status;
+        const oldAssignedTo = currentResult.recordset[0].AssignedTo;
         let resolvedAt = currentResult.recordset[0].ResolvedAt ?? null;
+        const nextAssignedTo = assignedTo === undefined ? oldAssignedTo : assignedTo;
+        let nextStatus = status === undefined ? oldStatus : status;
+
+        if (
+            req.user.role === 'it_staff'
+            && assignedTo === null
+            && Number(oldAssignedTo) !== req.user.id
+        ) {
+            await transaction.rollback();
+            return res.status(403).json({
+                message: 'Yalnızca size atanmış ticketı kuyruğa bırakabilirsiniz.'
+            });
+        }
+
+        if (nextAssignedTo === null && nextStatus === 'in_progress') {
+            if (status === 'in_progress') {
+                await transaction.rollback();
+                return res.status(400).json({
+                    message: 'Atanmamış ticket işlemde durumuna alınamaz.'
+                });
+            }
+            nextStatus = 'open';
+        }
 
         if (status !== undefined) {
             const staffResult = await transaction.request()
@@ -376,9 +448,9 @@ router.patch('/:id', requireRole('it_staff', 'it_admin'), async (req, res) => {
 
         request.input('id', id);
 
-        if (status !== undefined) {
+        if (status !== undefined || nextStatus !== oldStatus) {
             updates.push('Status = @status');
-            request.input('status', status);
+            request.input('status', nextStatus);
         }
 
         if (priority !== undefined) {
@@ -407,12 +479,12 @@ router.patch('/:id', requireRole('it_staff', 'it_admin'), async (req, res) => {
         `);
 
         // Yalnızca durum gerçekten değiştiyse geçmişe ekle
-        if (status !== undefined && oldStatus !== status) {
+        if (nextStatus !== oldStatus) {
             await transaction.request()
                 .input('ticketId', id)
                 .input('changedBy', changedBy)
                 .input('oldStatus', oldStatus)
-                .input('newStatus', status)
+                .input('newStatus', nextStatus)
                 .query(`
                     INSERT INTO dbo.TicketHistory
                         (TicketId, ChangedBy, OldStatus, NewStatus)
@@ -420,7 +492,7 @@ router.patch('/:id', requireRole('it_staff', 'it_admin'), async (req, res) => {
                         (@ticketId, @changedBy, @oldStatus, @newStatus);
                 `);
 
-            if (status === 'resolved') {
+            if (nextStatus === 'resolved') {
                 const resolutionResult = await transaction.request()
                     .input('ticketId', id)
                     .query(`
@@ -433,6 +505,31 @@ router.patch('/:id', requireRole('it_staff', 'it_admin'), async (req, res) => {
             }
         }
 
+        if (
+            assignedTo === null
+            && oldAssignedTo !== null
+            && nextStatus !== 'resolved'
+        ) {
+            await transaction.request()
+                .input('ticketId', id)
+                .input('changedBy', changedBy)
+                .query(`
+                    INSERT INTO dbo.TicketHistory
+                        (TicketId, ChangedBy, OldStatus, NewStatus)
+                    VALUES
+                        (@ticketId, @changedBy, 'open', 'open');
+                `);
+        }
+
+        const releasedByStaff = assignedTo === null && req.user.role === 'it_staff'
+            ? req.user.id
+            : undefined;
+        await dispatchUnassignedTickets(
+            pool,
+            changedBy,
+            transaction,
+            releasedByStaff,
+        );
         await transaction.commit();
 
         res.json({

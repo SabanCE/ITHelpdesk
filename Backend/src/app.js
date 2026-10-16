@@ -13,6 +13,10 @@ app.use('/api/auth', authRoutes);
 app.use('/api/tickets', authenticateToken, ticketRoutes);
 app.use('/api/users', authenticateToken, requireRole('it_staff', 'it_admin'), userRoutes);
 
+app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok' });
+});
+
 app.get('/', (req, res) => {
     res.json({
         message: 'HelpDesk API çalışıyor!'
