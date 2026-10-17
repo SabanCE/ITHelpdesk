@@ -72,6 +72,14 @@ Open `http://localhost:5173`. The API is also available on
 Run frontend unit and component tests from `helpdesk-frontend` with
 `npm test`.
 
+## GitHub Actions CI
+
+The `.github/workflows/ci.yml` workflow runs frontend tests, lint, and build,
+plus backend unit tests. A separate backend Docker integration job builds the
+image, prepares a disposable SQL Server database, starts the backend container
+and waits for its HTTP health check, then exercises login and ticket create,
+list, update, history, and delete operations against SQL Server.
+
 If the API server cannot be reached at sign-in, the frontend offers a browser-
 only demo with sample employee, IT staff, and IT administrator accounts.
 Demo ticket changes are saved in that browser's local storage and are never

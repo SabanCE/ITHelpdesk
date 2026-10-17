@@ -60,3 +60,92 @@ jobs:
 
       - name: Run backend tests
         run: npm test
+
+  backend-docker-integration:
+    name: Backend Docker and SQL Server integration
+    runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_PID: Developer
+          MSSQL_SA_PASSWORD: HelpDesk_CI_Only!2026
+        ports:
+          - 1433:1433
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: Backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: Backend
+        run: npm ci
+
+      - name: Build backend Docker image
+        run: docker build --file Backend/dockerfile --tag ithelpdesk-backend:ci Backend
+
+      - name: Prepare isolated SQL Server integration database
+        working-directory: Backend
+        env:
+          CI_SQL_HOST: localhost
+          CI_SQL_PORT: 1433
+          CI_SQL_SA_PASSWORD: HelpDesk_CI_Only!2026
+          CI_SQL_APP_PASSWORD: HelpDesk_CI_App_Only!2026
+        run: npm run test:integration:setup
+
+      - name: Start backend container
+        env:
+          JWT_SECRET: helpdesk-ci-jwt-secret-at-least-32-bytes
+          CI_SQL_APP_PASSWORD: HelpDesk_CI_App_Only!2026
+        run: |
+          docker run --detach \
+            --name ithelpdesk-backend-ci \
+            --add-host=host.docker.internal:host-gateway \
+            --publish 3001:3000 \
+            --env PORT=3000 \
+            --env JWT_SECRET="$JWT_SECRET" \
+            --env DB_AUTH=sql \
+            --env DB_HOST=host.docker.internal \
+            --env DB_PORT=1433 \
+            --env DB_NAME=HelpDeskIntegration \
+            --env DB_USER=ithelpdesk_ci \
+            --env DB_PASSWORD="$CI_SQL_APP_PASSWORD" \
+            ithelpdesk-backend:ci
+
+      - name: Wait for backend HTTP health check
+        run: |
+          for attempt in $(seq 1 60); do
+            health="$(docker inspect --format='{{.State.Health.Status}}' ithelpdesk-backend-ci 2>/dev/null || true)"
+            if [ "$health" = "healthy" ]; then
+              curl --fail --silent http://localhost:3001/api/health
+              exit 0
+            fi
+            if [ "$health" = "unhealthy" ]; then
+              docker logs ithelpdesk-backend-ci
+              exit 1
+            fi
+            sleep 2
+          done
+          docker logs ithelpdesk-backend-ci
+          echo "Backend did not become healthy in time."
+          exit 1
+
+      - name: Run SQL Server API integration tests
+        working-directory: Backend
+        env:
+          CI_SQL_HOST: localhost
+          CI_SQL_PORT: 1433
+          CI_SQL_APP_PASSWORD: HelpDesk_CI_App_Only!2026
+          INTEGRATION_API_URL: http://localhost:3001
+        run: npm run test:integration
+
+      - name: Show backend logs on failure
+        if: failure()
+        run: docker logs ithelpdesk-backend-ci
