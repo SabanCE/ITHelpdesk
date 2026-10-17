@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   frontend:
-    name: Frontend tests, lint, and build
+    name: Frontend testleri
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -39,7 +39,7 @@ jobs:
         run: npm run build
 
   backend:
-    name: Backend tests
+    name: Backend testleri
     runs-on: windows-latest
     defaults:
       run:
@@ -62,7 +62,7 @@ jobs:
         run: npm test
 
   backend-docker-integration:
-    name: Backend Docker and SQL Server integration
+    name: Backend için Docker ile SQL Server entegrasyon testleri
     runs-on: ubuntu-latest
     services:
       sqlserver:

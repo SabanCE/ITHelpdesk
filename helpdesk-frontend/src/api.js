@@ -44,7 +44,7 @@ async function request(path, options) {
   }
   if (
     path === '/api/auth/login'
-    && [502, 503, 504].includes(response.status)
+    && [404, 502, 503, 504].includes(response.status)
   ) {
     const unavailableError = new Error('Backend sunucusuna ulaşılamıyor.');
     unavailableError.code = 'NETWORK_UNAVAILABLE';
@@ -82,7 +82,17 @@ export async function isBackendAvailable() {
     const response = await fetch(`${apiBaseUrl}/api/health`, {
       headers: { Accept: 'application/json' },
     });
-    return ![502, 503, 504].includes(response.status);
+    if (!response.ok) return false;
+
+    let body;
+    try {
+      body = await response.json();
+    } catch (error) {
+      if (error instanceof SyntaxError) return false;
+      throw error;
+    }
+
+    return body?.status === 'ok';
   } catch (error) {
     if (error instanceof TypeError) return false;
     throw error;

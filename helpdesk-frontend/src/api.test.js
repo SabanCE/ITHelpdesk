@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { deleteTicket, getTickets, login, updateTicket } from './api.js';
+import {
+  deleteTicket,
+  getTickets,
+  isBackendAvailable,
+  login,
+  updateTicket,
+} from './api.js';
 
 describe('updateTicket', () => {
   afterEach(() => {
@@ -56,6 +62,50 @@ describe('updateTicket', () => {
       expect(session.user.Role).toBe('employee');
     });
 
+    test('switches to demo mode when Vercel returns 404 for API routes', async () => {
+      const fetch = vi.fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 404,
+          json: async () => ({ message: 'Not Found' }),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 404,
+          json: async () => ({ message: 'Not Found' }),
+        });
+      vi.stubGlobal('fetch', fetch);
+
+      await expect(login({
+        email: 'it.admin@demo.local',
+        password: 'Admin123!',
+      })).resolves.toMatchObject({
+        demo: true,
+        user: { Role: 'it_admin' },
+      });
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    test('does not use demo mode when login returns 404 but the health endpoint is healthy', async () => {
+      const fetch = vi.fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 404,
+          json: async () => ({ message: 'Not Found' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({ status: 'ok' }),
+        });
+      vi.stubGlobal('fetch', fetch);
+
+      await expect(login({
+        email: 'it.admin@demo.local',
+        password: 'Admin123!',
+      })).rejects.toThrow('Backend sunucusuna ulaşılamıyor.');
+    });
+
     test('does not switch to demo mode when the backend health endpoint is available', async () => {
       const fetch = vi.fn()
         .mockResolvedValueOnce({
@@ -110,6 +160,36 @@ describe('updateTicket', () => {
       expect(tickets.length).toBeGreaterThan(0);
       expect(tickets.every((ticket) => ticket.requester === 'Demo Çalışan')).toBe(true);
       expect(fetch).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      {
+        name: '404 response',
+        response: { ok: false, status: 404 },
+        available: false,
+      },
+      {
+        name: 'Vercel SPA fallback HTML',
+        response: {
+          ok: true,
+          status: 200,
+          json: async () => { throw new SyntaxError('Unexpected token'); },
+        },
+        available: false,
+      },
+      {
+        name: 'valid backend health response',
+        response: {
+          ok: true,
+          status: 200,
+          json: async () => ({ status: 'ok' }),
+        },
+        available: true,
+      },
+    ])('detects backend availability from $name', async ({ response, available }) => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
+
+      await expect(isBackendAvailable()).resolves.toBe(available);
     });
   });
 

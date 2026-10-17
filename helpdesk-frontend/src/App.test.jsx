@@ -13,7 +13,11 @@ test('ends an existing demo session when the backend is available', async () => 
     demo: true,
     user: { id: 101, name: 'Demo Çalışan', role: 'employee' },
   }));
-  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 200 }));
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => ({ status: 'ok' }),
+  }));
 
   render(<App />);
 
