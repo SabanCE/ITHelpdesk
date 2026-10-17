@@ -10,5 +10,14 @@ export function formatElapsedTime(ticket, now = Date.now()) {
   }
 
   const elapsedMinutes = Math.max(0, Math.floor((endTime - createdAt) / 60_000));
+
+  if (elapsedMinutes >= 24 * 60) {
+    return `${Math.floor(elapsedMinutes / (24 * 60))} gün`;
+  }
+
+  if (elapsedMinutes >= 60) {
+    return `${Math.floor(elapsedMinutes / 60)} saat`;
+  }
+
   return `${elapsedMinutes} dk`;
 }

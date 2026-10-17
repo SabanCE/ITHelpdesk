@@ -1,0 +1,20 @@
+$kind: http-request
+name: Update Ticket
+method: PATCH
+url: '{{baseUrl}}/api/tickets/{{ticketId}}'
+order: 4000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{token}}'
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "status": "in_progress",
+      "assignedTo": 1
+    }

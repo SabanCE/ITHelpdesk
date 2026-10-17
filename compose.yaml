@@ -1,0 +1,34 @@
+services:
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: dockerfile
+    container_name: ithelpdesk-backend
+    env_file:
+      - ./Backend/.env
+    environment:
+      DB_AUTH: sql
+      DB_HOST: host.docker.internal
+      DB_PORT: "1433"
+      PORT: "3000"
+    ports:
+      - "3001:3000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  frontend:
+    build:
+      context: ./helpdesk-frontend
+      dockerfile: dockerfile
+    container_name: ithelpdesk-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

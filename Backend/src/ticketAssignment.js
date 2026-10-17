@@ -1,4 +1,4 @@
-const sql = require('mssql/msnodesqlv8');
+const { sql } = require('./db');
 
 async function dispatchUnassignedTickets(
     pool,

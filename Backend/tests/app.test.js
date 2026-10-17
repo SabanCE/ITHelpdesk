@@ -3,6 +3,11 @@ const request = require('supertest');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const app = require('../src/app');
+const { dispatchUnassignedTickets } = require('../src/ticketAssignment');
+
+jest.mock('../src/ticketAssignment', () => ({
+    dispatchUnassignedTickets: jest.fn().mockResolvedValue(0)
+}));
 
 process.env.JWT_SECRET = 'test-secret-that-is-at-least-32-bytes-long';
 
@@ -17,6 +22,10 @@ function asUser(testRequest, id = 3, role = 'it_staff') {
 }
 
 describe('HelpDesk API', () => {
+    beforeEach(() => {
+        dispatchUnassignedTickets.mockResolvedValue(0);
+    });
+
     describe('/api/auth', () => {
         afterEach(() => {
             delete app.locals.dbPool;
@@ -146,6 +155,13 @@ describe('HelpDesk API', () => {
         expect(response.body).toEqual({
             message: 'HelpDesk API çalışıyor!'
         });
+    });
+
+    test('GET /api/health backend kullanılabilirliğini bildirmeli', async () => {
+        const response = await request(app).get('/api/health');
+
+        expect(response.statusCode).toBe(200);
+        expect(response.body).toEqual({ status: 'ok' });
     });
 
     describe('/api/users', () => {
@@ -306,6 +322,84 @@ describe('HelpDesk API', () => {
             expect(response.statusCode).toBe(403);
         });
 
+        test.each(['employee', 'it_staff'])(
+            '%s rolü ticket silememeli',
+            async (role) => {
+                const response = await asUser(
+                    request(app).delete('/api/tickets/8'),
+                    4,
+                    role
+                );
+
+                expect(response.statusCode).toBe(403);
+            }
+        );
+
+        test('IT yöneticisi ticketi ve durum geçmişini silebilmeli', async () => {
+            const query = jest.fn().mockResolvedValue({
+                recordset: [{ Id: 8 }]
+            });
+            const input = jest.fn().mockReturnThis();
+            const transaction = {
+                begin: jest.fn().mockResolvedValue(),
+                request: jest.fn(() => ({ input, query })),
+                commit: jest.fn().mockResolvedValue(),
+                rollback: jest.fn().mockResolvedValue()
+            };
+            const sql = require('mssql/msnodesqlv8');
+            jest.spyOn(sql, 'Transaction').mockImplementation(() => transaction);
+            app.locals.dbPool = {};
+
+            const response = await asUser(
+                request(app).delete('/api/tickets/8'),
+                9,
+                'it_admin'
+            );
+
+            expect(response.statusCode).toBe(204);
+            expect(query).toHaveBeenCalledTimes(1);
+            expect(query.mock.calls[0][0]).toContain('DELETE FROM dbo.TicketHistory');
+            expect(query.mock.calls[0][0]).toContain('DELETE FROM dbo.Tickets');
+            expect(input).toHaveBeenCalledWith('id', 8);
+            expect(transaction.commit).toHaveBeenCalledTimes(1);
+        });
+
+        test('ticket silme isteğinde geçersiz ID için 400 döndürmeli', async () => {
+            const response = await asUser(
+                request(app).delete('/api/tickets/abc'),
+                9,
+                'it_admin'
+            );
+
+            expect(response.statusCode).toBe(400);
+        });
+
+        test('olmayan ticket silme isteğinde 404 döndürüp transactionı geri almalı', async () => {
+            const query = jest.fn().mockResolvedValue({ recordset: [] });
+            const transaction = {
+                begin: jest.fn().mockResolvedValue(),
+                request: jest.fn(() => ({
+                    input: jest.fn().mockReturnThis(),
+                    query
+                })),
+                commit: jest.fn().mockResolvedValue(),
+                rollback: jest.fn().mockResolvedValue()
+            };
+            const sql = require('mssql/msnodesqlv8');
+            jest.spyOn(sql, 'Transaction').mockImplementation(() => transaction);
+            app.locals.dbPool = {};
+
+            const response = await asUser(
+                request(app).delete('/api/tickets/999'),
+                9,
+                'it_admin'
+            );
+
+            expect(response.statusCode).toBe(404);
+            expect(transaction.rollback).toHaveBeenCalledTimes(1);
+            expect(transaction.commit).not.toHaveBeenCalled();
+        });
+
         test('GET /api/tickets ticket listesini döndürmeli', async () => {
             const tickets = [
                 { Id: 1, Title: 'Bilgisayar sorunu', Status: 'open' }
@@ -374,11 +468,18 @@ describe('HelpDesk API', () => {
             };
             const query = jest.fn()
                 .mockResolvedValueOnce({ recordset: [{ Id: 3 }] })
+                .mockResolvedValueOnce({ recordset: [ticket] })
                 .mockResolvedValueOnce({ recordset: [ticket] });
             const input = jest.fn().mockReturnThis();
-            app.locals.dbPool = {
-                request: jest.fn(() => ({ input, query }))
+            const transaction = {
+                begin: jest.fn().mockResolvedValue(),
+                request: jest.fn(() => ({ input, query })),
+                commit: jest.fn().mockResolvedValue(),
+                rollback: jest.fn().mockResolvedValue()
             };
+            const sql = require('mssql/msnodesqlv8');
+            jest.spyOn(sql, 'Transaction').mockImplementation(() => transaction);
+            app.locals.dbPool = {};
 
             const response = await asUser(request(app)
                 .post('/api/tickets')
@@ -391,7 +492,13 @@ describe('HelpDesk API', () => {
 
             expect(response.statusCode).toBe(201);
             expect(response.body).toEqual(ticket);
-            expect(query).toHaveBeenCalledTimes(2);
+            expect(query).toHaveBeenCalledTimes(3);
+            expect(dispatchUnassignedTickets).toHaveBeenCalledWith(
+                app.locals.dbPool,
+                3,
+                transaction
+            );
+            expect(transaction.commit).toHaveBeenCalledTimes(1);
             expect(input).toHaveBeenCalledWith('title', 'E-posta sorunu');
             expect(input).toHaveBeenCalledWith('createdBy', 3);
             expect(input).toHaveBeenCalledWith(
@@ -404,11 +511,18 @@ describe('HelpDesk API', () => {
             const ticket = { Id: 8, CreatedBy: 12, AssignedTo: null };
             const query = jest.fn()
                 .mockResolvedValueOnce({ recordset: [{ Id: 12 }] })
+                .mockResolvedValueOnce({ recordset: [ticket] })
                 .mockResolvedValueOnce({ recordset: [ticket] });
             const input = jest.fn().mockReturnThis();
-            app.locals.dbPool = {
-                request: jest.fn(() => ({ input, query }))
+            const transaction = {
+                begin: jest.fn().mockResolvedValue(),
+                request: jest.fn(() => ({ input, query })),
+                commit: jest.fn().mockResolvedValue(),
+                rollback: jest.fn().mockResolvedValue()
             };
+            const sql = require('mssql/msnodesqlv8');
+            jest.spyOn(sql, 'Transaction').mockImplementation(() => transaction);
+            app.locals.dbPool = {};
 
             const response = await asUser(request(app)
                 .post('/api/tickets')
@@ -459,6 +573,67 @@ describe('HelpDesk API', () => {
             );
 
             expect(response.statusCode).toBe(403);
+        });
+
+        test('atanmamış ticket işlemde durumuna geçirilememeli', async () => {
+            const query = jest.fn().mockResolvedValue({
+                recordset: [{ Id: 8, Status: 'open', AssignedTo: null }]
+            });
+            const transaction = {
+                begin: jest.fn().mockResolvedValue(),
+                request: jest.fn(() => ({ input: jest.fn().mockReturnThis(), query })),
+                rollback: jest.fn().mockResolvedValue()
+            };
+            const sql = require('mssql/msnodesqlv8');
+            jest.spyOn(sql, 'Transaction').mockImplementation(() => transaction);
+            app.locals.dbPool = {};
+
+            const response = await asUser(
+                request(app).patch('/api/tickets/8').send({
+                    status: 'in_progress'
+                })
+            );
+
+            expect(response.statusCode).toBe(400);
+            expect(response.body.message).toMatch(/atanmamış ticket/i);
+            expect(transaction.rollback).toHaveBeenCalledTimes(1);
+        });
+
+        test('IT personeli kendi işlemde ticketını kuyruğa bırakınca ticket açık olmalı', async () => {
+            const query = jest.fn()
+                .mockResolvedValueOnce({
+                    recordset: [{ Id: 8, Status: 'in_progress', AssignedTo: 3 }]
+                })
+                .mockResolvedValueOnce({
+                    recordset: [{ Id: 8, Status: 'open', AssignedTo: null }]
+                })
+                .mockResolvedValueOnce({ recordset: [] });
+            const input = jest.fn().mockReturnThis();
+            const transaction = {
+                begin: jest.fn().mockResolvedValue(),
+                request: jest.fn(() => ({ input, query })),
+                commit: jest.fn().mockResolvedValue(),
+                rollback: jest.fn().mockResolvedValue()
+            };
+            const sql = require('mssql/msnodesqlv8');
+            jest.spyOn(sql, 'Transaction').mockImplementation(() => transaction);
+            app.locals.dbPool = {};
+
+            const response = await asUser(
+                request(app).patch('/api/tickets/8').send({ assignedTo: null })
+            );
+
+            expect(response.statusCode).toBe(200);
+            expect(response.body.Status).toBe('open');
+            expect(response.body.AssignedTo).toBeNull();
+            expect(input).toHaveBeenCalledWith('status', 'open');
+            expect(query.mock.calls[2][0]).toContain('TicketHistory');
+            expect(dispatchUnassignedTickets).toHaveBeenCalledWith(
+                app.locals.dbPool,
+                3,
+                transaction,
+                3
+            );
         });
 
         test('Çözülen ticket için ilk çözüm zamanını yanıtla dönmeli', async () => {

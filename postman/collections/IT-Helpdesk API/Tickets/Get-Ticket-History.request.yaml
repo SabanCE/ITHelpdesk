@@ -1,0 +1,10 @@
+$kind: http-request
+name: Get Ticket History
+method: GET
+url: '{{baseUrl}}/api/tickets/{{ticketId}}/history'
+order: 5000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{token}}'

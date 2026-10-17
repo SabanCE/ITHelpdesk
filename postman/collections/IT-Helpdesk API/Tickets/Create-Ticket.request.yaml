@@ -1,0 +1,21 @@
+$kind: http-request
+name: Create Ticket
+method: POST
+url: '{{baseUrl}}/api/tickets'
+order: 3000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{token}}'
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "title": "Bilgisayar açılmıyor",
+      "description": "Sabahtan beri bilgisayarım açılmıyor, yardım lazım.",
+      "priority": "high"
+    }

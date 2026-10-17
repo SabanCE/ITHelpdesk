@@ -9,6 +9,7 @@ import {
 import Sidebar from './components/Sidebar.jsx';
 import Topbar from './components/Topbar.jsx';
 import Dashboard from './pages/Dashboard.jsx';
+import AdminAssignments from './pages/AdminAssignments.jsx';
 import Login from './pages/Login.jsx';
 import NewTicket from './pages/NewTicket.jsx';
 import Technicians from './pages/Technicians.jsx';
@@ -16,8 +17,10 @@ import TicketDetails from './pages/TicketDetails.jsx';
 import TicketList from './pages/TicketList.jsx';
 import {
   createTicket,
+  deleteTicket,
   getTickets,
   getUsers,
+  isBackendAvailable,
   login,
   updateTicket,
 } from './api.js';
@@ -41,6 +44,7 @@ function AppLayout() {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const [loginNotice, setLoginNotice] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
   const [currentTime, setCurrentTime] = useState(Date.now);
   const navigate = useNavigate();
@@ -76,6 +80,20 @@ function AppLayout() {
       setLoadError('');
 
       try {
+        if (auth.demo && await isBackendAvailable()) {
+          if (!cancelled) {
+            sessionStorage.removeItem(sessionKey);
+            setAuth(null);
+            setTickets([]);
+            setUsers([]);
+            setLoginNotice('Sunucu yeniden kullanılabilir. Lütfen sunucuda kayıtlı hesabınızla tekrar giriş yapın.');
+            navigate('/login', {
+              replace: true,
+            });
+          }
+          return;
+        }
+
         const [loadedTickets, employees, technicians] = await Promise.all([
           getTickets(),
           isStaff ? getUsers('employee') : Promise.resolve([]),
@@ -101,7 +119,7 @@ function AppLayout() {
     return () => {
       cancelled = true;
     };
-  }, [auth, isStaff, reloadKey]);
+  }, [auth, isStaff, navigate, reloadKey]);
 
   async function handleLogin(credentials) {
     const session = await login(credentials);
@@ -119,6 +137,7 @@ function AppLayout() {
       },
       demo: session.demo === true,
     };
+    setLoginNotice('');
     sessionStorage.setItem(sessionKey, JSON.stringify(signedInSession));
     setAuth(signedInSession);
     navigate('/', { replace: true });
@@ -136,7 +155,11 @@ function AppLayout() {
 
   async function handleCreateTicket(ticketData) {
     const ticket = await createTicket(ticketData, users, auth.user);
-    setTickets((currentTickets) => [ticket, ...currentTickets]);
+    try {
+      setTickets(await getTickets());
+    } catch (error) {
+      setLoadError(`Talep oluşturuldu ancak atama kuyruğu yenilenemedi: ${error.message}`);
+    }
     navigate(`/tickets/${ticket.id}`);
   }
 
@@ -147,13 +170,30 @@ function AppLayout() {
         currentTicket.id === updatedTicket.id ? updatedTicket : currentTicket,
       ),
     );
+    try {
+      setTickets(await getTickets());
+    } catch (error) {
+      setLoadError(`Talep güncellendi ancak atama kuyruğu yenilenemedi: ${error.message}`);
+    }
     return updatedTicket;
+  }
+
+  async function handleDeleteTicket(ticket) {
+    await deleteTicket(ticket.id);
+    setTickets((currentTickets) =>
+      currentTickets.filter((currentTicket) => currentTicket.id !== ticket.id),
+    );
+    navigate('/tickets');
+  }
+
+  async function handleAssignTicket(ticket, technicianId) {
+    await handleUpdateTicket(ticket, { assignedTo: technicianId });
   }
 
   if (!auth) {
     return (
       <Routes>
-        <Route path="/login" element={<Login onLogin={handleLogin} />} />
+        <Route path="/login" element={<Login onLogin={handleLogin} notice={loginNotice} />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     );
@@ -212,6 +252,16 @@ function AppLayout() {
               element={isStaff ? <Technicians users={users} /> : <Navigate to="/my-tickets" replace />}
             />
             <Route
+              path="/assignments"
+              element={isAdmin ? (
+                <AdminAssignments
+                  tickets={tickets}
+                  technicians={users.filter((user) => user.role === 'it_staff')}
+                  onAssign={handleAssignTicket}
+                />
+              ) : <Navigate to="/" replace />}
+            />
+            <Route
               path="/tickets/new"
               element={(
                 <NewTicket
@@ -228,8 +278,10 @@ function AppLayout() {
                 <TicketDetails
                   tickets={tickets}
                   onUpdateTicket={handleUpdateTicket}
+                  onDeleteTicket={handleDeleteTicket}
                   isStaff={isStaff}
                   isAdmin={isAdmin}
+                  currentUserId={auth.user.id}
                   technicians={users.filter((user) => user.role === 'it_staff')}
                   currentTime={currentTime}
                 />

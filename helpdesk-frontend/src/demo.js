@@ -91,6 +91,40 @@ function writeData(data) {
   }
 }
 
+function dispatchDemoTickets(data) {
+  const activeStaffIds = new Set(
+    data.tickets
+      .filter((ticket) => ticket.assignedTo && !['Resolved', 'Closed'].includes(ticket.status))
+      .map((ticket) => Number(ticket.assignedTo)),
+  );
+  const idleStaff = demoUsers
+    .filter((user) => user.role === 'it_staff' && !activeStaffIds.has(user.id))
+    .sort((first, second) => first.id - second.id);
+  const priorityOrder = { High: 0, Medium: 1, Low: 2 };
+  const queue = data.tickets
+    .filter((ticket) => !ticket.assignedTo && ticket.status === 'Open')
+    .map((ticket) => {
+      const lastRelease = (data.history[ticket.id] ?? []).find((entry) =>
+        ['open', 'in_progress'].includes(entry.OldStatus)
+          && entry.NewStatus === 'open');
+      return { ...ticket, lastReleasedBy: lastRelease?.ChangedBy };
+    })
+    .sort((first, second) =>
+      priorityOrder[first.priority] - priorityOrder[second.priority]
+        || Date.parse(first.createdAt) - Date.parse(second.createdAt)
+        || Number(first.id) - Number(second.id));
+
+  idleStaff.forEach((staff) => {
+    const ticketIndex = queue.findIndex((ticket) =>
+      Number(ticket.lastReleasedBy) !== Number(staff.id));
+    if (ticketIndex < 0) return;
+    const [ticket] = queue.splice(ticketIndex, 1);
+    const storedTicket = data.tickets.find((item) => item.id === ticket.id);
+    storedTicket.assignedTo = staff.id;
+    storedTicket.assignee = staff.name;
+  });
+}
+
 function getCurrentDemoUser() {
   try {
     const session = JSON.parse(sessionStorage.getItem('helpdesk-session') ?? 'null');
@@ -170,8 +204,9 @@ export function createDemoTicket(ticket, users, currentUser) {
   data.nextId += 1;
   data.tickets.unshift(createdTicket);
   data.history[createdTicket.id] = [];
+  dispatchDemoTickets(data);
   writeData(data);
-  return structuredClone(createdTicket);
+  return structuredClone(data.tickets.find((ticket) => ticket.id === createdTicket.id));
 }
 
 export function updateDemoTicket(ticket, updates, users) {
@@ -179,8 +214,20 @@ export function updateDemoTicket(ticket, updates, users) {
   const currentTicket = data.tickets.find((item) => item.id === ticket.id);
   if (!currentTicket) throw new Error('Demo talebi bulunamadı.');
 
-  if (updates.status && updates.status !== currentTicket.status) {
-    if (updates.status === 'Resolved' && !currentTicket.resolvedAt) {
+  const nextAssignedTo = Object.hasOwn(updates, 'assignedTo')
+    ? updates.assignedTo
+    : currentTicket.assignedTo;
+  const nextStatus = updates.status
+    ?? (updates.assignedTo === null && currentTicket.status === 'In Progress'
+      ? 'Open'
+      : undefined);
+
+  if (nextStatus === 'In Progress' && !nextAssignedTo) {
+    throw new Error('Atanmamış talep işlemde durumuna alınamaz.');
+  }
+
+  if (nextStatus && nextStatus !== currentTicket.status) {
+    if (nextStatus === 'Resolved' && !currentTicket.resolvedAt) {
       currentTicket.resolvedAt = new Date().toISOString();
     }
     data.history[currentTicket.id] ??= [];
@@ -188,12 +235,32 @@ export function updateDemoTicket(ticket, updates, users) {
       Id: data.nextHistoryId,
       TicketId: Number(currentTicket.id),
       OldStatus: currentTicket.status.toLowerCase().replaceAll(' ', '_'),
-      NewStatus: updates.status.toLowerCase().replaceAll(' ', '_'),
+      NewStatus: nextStatus.toLowerCase().replaceAll(' ', '_'),
       CreatedAt: new Date().toISOString(),
       ChangedByName: getCurrentDemoUser()?.name ?? 'Demo kullanıcı',
+      ChangedBy: getCurrentDemoUser()?.id ?? null,
     });
     data.nextHistoryId += 1;
-    currentTicket.status = updates.status;
+    currentTicket.status = nextStatus;
+  }
+
+  if (
+    updates.assignedTo === null
+    && currentTicket.assignedTo !== null
+    && currentTicket.assignedTo !== undefined
+    && !['Resolved', 'Closed'].includes(currentTicket.status)
+  ) {
+    data.history[currentTicket.id] ??= [];
+    data.history[currentTicket.id].unshift({
+      Id: data.nextHistoryId,
+      TicketId: Number(currentTicket.id),
+      OldStatus: 'open',
+      NewStatus: 'open',
+      CreatedAt: new Date().toISOString(),
+      ChangedByName: getCurrentDemoUser()?.name ?? 'Demo kullanıcı',
+      ChangedBy: getCurrentDemoUser()?.id ?? null,
+    });
+    data.nextHistoryId += 1;
   }
 
   if (Object.hasOwn(updates, 'assignedTo')) {
@@ -208,8 +275,26 @@ export function updateDemoTicket(ticket, updates, users) {
     currentTicket.assignee = assignee?.name ?? 'Atanmadı';
   }
 
+  dispatchDemoTickets(data);
   writeData(data);
   return structuredClone(currentTicket);
+}
+
+export function deleteDemoTicket(ticketId) {
+  const user = getCurrentDemoUser();
+  if (user?.role !== 'it_admin') {
+    throw new Error('Bu işlem için yetkiniz yok.');
+  }
+
+  const data = readData();
+  const ticketIndex = data.tickets.findIndex(
+    (ticket) => ticket.id === String(ticketId),
+  );
+  if (ticketIndex < 0) throw new Error('Demo talebi bulunamadı.');
+
+  data.tickets.splice(ticketIndex, 1);
+  delete data.history[ticketId];
+  writeData(data);
 }
 
 export function getDemoTicketHistory(ticketId) {

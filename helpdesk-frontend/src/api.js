@@ -44,12 +44,14 @@ async function request(path, options) {
   }
   if (
     path === '/api/auth/login'
-    && [404, 502, 503, 504].includes(response.status)
+    && [502, 503, 504].includes(response.status)
   ) {
     const unavailableError = new Error('Backend sunucusuna ulaşılamıyor.');
     unavailableError.code = 'NETWORK_UNAVAILABLE';
     throw unavailableError;
   }
+
+  if (response.status === 204) return undefined;
 
   let body;
   try {
@@ -75,12 +77,25 @@ async function request(path, options) {
   return body;
 }
 
+export async function isBackendAvailable() {
+  try {
+    const response = await fetch(`${apiBaseUrl}/api/health`, {
+      headers: { Accept: 'application/json' },
+    });
+    return ![502, 503, 504].includes(response.status);
+  } catch (error) {
+    if (error instanceof TypeError) return false;
+    throw error;
+  }
+}
+
 export function login(credentials) {
   return request('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify(credentials),
   }).catch(async (error) => {
     if (error.code !== 'NETWORK_UNAVAILABLE') throw error;
+    if (await isBackendAvailable()) throw error;
     const { loginDemo } = await import('./demo.js');
     return loginDemo(credentials);
   });
@@ -189,6 +204,14 @@ export async function updateTicket(ticket, updates, users) {
       ?? ticket.requester
       ?? updatedTicket.requester,
   };
+}
+
+export async function deleteTicket(ticketId) {
+  if (isDemoSession()) {
+    const { deleteDemoTicket } = await import('./demo.js');
+    return deleteDemoTicket(ticketId);
+  }
+  await request(`/api/tickets/${ticketId}`, { method: 'DELETE' });
 }
 
 export function getTicketHistory(ticketId) {

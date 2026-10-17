@@ -1,0 +1,3 @@
+$kind: collection
+name: Users
+description: "Kullanıcı listesi (it_staff veya it_admin rolü gerektirir)"

@@ -7,6 +7,10 @@ function statusClass(status) {
   return status.toLowerCase().replace(' ', '-');
 }
 
+function normalizeStatus(status) {
+  return status?.trim().toLowerCase().replaceAll('_', ' ').replace(/\s+/g, ' ');
+}
+
 export default function TicketList({
   tickets,
   mine = false,
@@ -16,9 +20,15 @@ export default function TicketList({
 }) {
   const { search } = useLocation();
   const selectedStatus = new URLSearchParams(search).get('status');
+  const listPath = employeeView || mine ? '/my-tickets' : '/tickets';
   const visibleTickets = tickets.filter((ticket) => {
     const matchesOwner = !mine || String(ticket.assignedTo) === String(currentUserId);
-    const matchesStatus = !selectedStatus || ticket.status === selectedStatus;
+    const ticketStatus = normalizeStatus(ticket.status);
+    const filterStatus = normalizeStatus(selectedStatus);
+    const matchesStatus = !filterStatus
+      || (filterStatus === 'open'
+        ? ['open', 'in progress'].includes(ticketStatus)
+        : ticketStatus === filterStatus);
     return matchesOwner && matchesStatus;
   });
 
@@ -33,12 +43,12 @@ export default function TicketList({
       </div>
 
       <div className="filter-row">
-        <Link className={!selectedStatus ? 'filter-chip selected' : 'filter-chip'} to={mine ? '/my-tickets' : '/tickets'}>Tüm durumlar</Link>
+        <Link className={!selectedStatus ? 'filter-chip selected' : 'filter-chip'} to={listPath}>Tüm durumlar</Link>
         {['Open', 'In Progress', 'Resolved'].map((status) => (
           <Link
             className={selectedStatus === status ? 'filter-chip selected' : 'filter-chip'}
             key={status}
-            to={`${mine ? '/my-tickets' : '/tickets'}?status=${encodeURIComponent(status)}`}
+            to={`${listPath}?status=${encodeURIComponent(status)}`}
           >
             {statusLabel(status)}
           </Link>

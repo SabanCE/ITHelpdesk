@@ -3,6 +3,7 @@ import { NavLink, Link } from 'react-router-dom';
 const menuItems = [
   { label: 'Kontrol Paneli', icon: '▦', to: '/', roles: ['it_staff', 'it_admin'] },
   { label: 'Tüm Talepler', icon: '▤', to: '/tickets', roles: ['it_staff', 'it_admin'] },
+  { label: 'Atama Kuyruğu', icon: '⇄', to: '/assignments', role: 'it_admin' },
   { label: 'Taleplerim', icon: '◷', to: '/my-tickets', role: 'employee' },
   { label: 'Teknik Ekip', icon: '♙', to: '/technicians', roles: ['it_staff', 'it_admin'] },
   { label: 'Yeni Talep', icon: '+', to: '/tickets/new', roles: ['employee', 'it_staff', 'it_admin'] },

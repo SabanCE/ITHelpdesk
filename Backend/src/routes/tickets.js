@@ -1,7 +1,7 @@
 
 const express = require('express');
 const { requireRole } = require('../middleware/auth');
-const sql = require('mssql/msnodesqlv8');
+const { sql } = require('../db');
 const { dispatchUnassignedTickets } = require('../ticketAssignment');
 
 const router = express.Router();
@@ -552,6 +552,53 @@ router.patch('/:id', requireRole('it_staff', 'it_admin'), async (req, res) => {
     }
 });
 
+router.delete('/:id', requireRole('it_admin'), async (req, res) => {
+    const id = Number(req.params.id);
+
+    if (!Number.isInteger(id) || id <= 0) {
+        return res.status(400).json({
+            message: 'Geçerli bir ticket ID girilmelidir.'
+        });
+    }
+
+    const transaction = new sql.Transaction(req.app.locals.dbPool);
+
+    try {
+        await transaction.begin();
+        const result = await transaction.request()
+            .input('id', id)
+            .query(`
+                DELETE FROM dbo.TicketHistory
+                WHERE TicketId = @id;
+
+                DELETE FROM dbo.Tickets
+                OUTPUT DELETED.Id
+                WHERE Id = @id;
+            `);
+
+        if (result.recordset.length === 0) {
+            await transaction.rollback();
+            return res.status(404).json({
+                message: 'Ticket bulunamadı.'
+            });
+        }
+
+        await transaction.commit();
+        return res.status(204).end();
+    } catch (error) {
+        try {
+            await transaction.rollback();
+        } catch (rollbackError) {
+            console.error('Ticket silme transaction geri alınamadı:',
+                rollbackError.message);
+        }
+
+        console.error('Ticket silinemedi:', error.message);
+        return res.status(500).json({
+            message: 'Ticket silinirken bir hata oluştu.'
+        });
+    }
+});
 
 router.get('/:id/history', async (req, res) => {
     try {

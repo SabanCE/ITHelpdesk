@@ -14,8 +14,10 @@ function formatDate(date) {
 export default function TicketDetails({
   tickets,
   onUpdateTicket,
+  onDeleteTicket,
   isStaff,
   isAdmin,
+  currentUserId,
   technicians = [],
   currentTime,
 }) {
@@ -26,6 +28,7 @@ export default function TicketDetails({
   const [historyError, setHistoryError] = useState('');
   const [actionError, setActionError] = useState('');
   const [updating, setUpdating] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [assignmentDraft, setAssignmentDraft] = useState(null);
   const [statusDraft, setStatusDraft] = useState(null);
   const currentAssignment = ticket?.assignedTo ? String(ticket.assignedTo) : '';
@@ -97,6 +100,31 @@ export default function TicketDetails({
     }
   }
 
+  async function releaseAssignment() {
+    setActionError('');
+    setUpdating(true);
+
+    try {
+      await onUpdateTicket(ticket, { assignedTo: null });
+    } catch (error) {
+      setActionError(error.message);
+    } finally {
+      setUpdating(false);
+    }
+  }
+
+  async function deleteTicket() {
+    setActionError('');
+    setUpdating(true);
+
+    try {
+      await onDeleteTicket(ticket);
+    } catch (error) {
+      setActionError(error.message);
+      setUpdating(false);
+    }
+  }
+
   return (
     <div className="page-content">
       <div className="page-heading">
@@ -119,7 +147,7 @@ export default function TicketDetails({
                   })}
                 >
                   <option value="Open">Açık</option>
-                  <option value="In Progress">İşlemde</option>
+                  <option value="In Progress" disabled={!ticket.assignedTo}>İşlemde</option>
                   <option value="Resolved">Çözüldü</option>
                 </select>
               </label>
@@ -131,6 +159,16 @@ export default function TicketDetails({
               >
                 {updating ? 'Kaydediliyor…' : 'Durumu güncelle'}
               </button>
+              {!isAdmin && String(ticket.assignedTo) === String(currentUserId) && (
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={releaseAssignment}
+                  disabled={updating}
+                >
+                  {updating ? 'Kuyruğa alınıyor…' : 'İşi bırak, kuyruğa al'}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -182,6 +220,44 @@ export default function TicketDetails({
             </button>
           </div>
         )}
+        {isAdmin && (
+          <div className="assignment-controls">
+            {confirmDelete ? (
+              <>
+                <p role="alert">
+                  Bu talep ve durum geçmişi kalıcı olarak silinecek. Emin misiniz?
+                </p>
+                <button
+                  className="danger-button"
+                  type="button"
+                  onClick={deleteTicket}
+                  disabled={updating}
+                >
+                  {updating ? 'Siliniyor…' : 'Evet, talebi sil'}
+                </button>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => setConfirmDelete(false)}
+                  disabled={updating}
+                >
+                  Vazgeç
+                </button>
+              </>
+            ) : (
+              <button
+                className="danger-button"
+                type="button"
+                onClick={() => setConfirmDelete(true)}
+              >
+                Talebi sil
+              </button>
+            )}
+          </div>
+        )}
+        {!ticket.assignedTo && ticket.status !== 'Resolved' && (
+          <p className="history-empty">Personel ataması yapılana kadar talep açık kalır.</p>
+        )}
       </section>
 
       <section className="detail-card history-card" aria-labelledby="history-heading">
@@ -194,13 +270,19 @@ export default function TicketDetails({
           <ul className="history-list">
             {history.map((entry) => (
               <li key={entry.Id}>
-                <span className={`ticket-status ${entry.OldStatus.replaceAll('_', '-').toLowerCase()}`}>
-                  {statusLabel(entry.OldStatus)}
-                </span>
-                <span aria-hidden="true">→</span>
-                <span className={`ticket-status ${entry.NewStatus.replaceAll('_', '-').toLowerCase()}`}>
-                  {statusLabel(entry.NewStatus)}
-                </span>
+                    {entry.OldStatus === entry.NewStatus ? (
+                      <span>{entry.ChangedByName} talebi yeniden atama kuyruğuna bıraktı.</span>
+                    ) : (
+                      <>
+                        <span className={`ticket-status ${entry.OldStatus.replaceAll('_', '-').toLowerCase()}`}>
+                          {statusLabel(entry.OldStatus)}
+                        </span>
+                        <span aria-hidden="true">→</span>
+                        <span className={`ticket-status ${entry.NewStatus.replaceAll('_', '-').toLowerCase()}`}>
+                          {statusLabel(entry.NewStatus)}
+                        </span>
+                      </>
+                    )}
                 <span className="history-entry-meta">
                   {entry.ChangedByName} · {formatDate(entry.CreatedAt)}
                 </span>

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { getTickets, login, updateTicket } from './api.js';
+import { deleteTicket, getTickets, login, updateTicket } from './api.js';
 
 describe('updateTicket', () => {
   afterEach(() => {
@@ -54,6 +54,27 @@ describe('updateTicket', () => {
 
       expect(session.demo).toBe(true);
       expect(session.user.Role).toBe('employee');
+    });
+
+    test('does not switch to demo mode when the backend health endpoint is available', async () => {
+      const fetch = vi.fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 502,
+          json: async () => ({ message: 'Bad Gateway' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({ status: 'ok' }),
+        });
+      vi.stubGlobal('fetch', fetch);
+
+      await expect(login({
+        email: 'it.admin@demo.local',
+        password: 'Admin123!',
+      })).rejects.toThrow('Backend sunucusuna ulaşılamıyor.');
+      expect(fetch).toHaveBeenCalledTimes(2);
     });
 
     test('uses backend authentication when the backend responds successfully', async () => {
@@ -157,5 +178,19 @@ describe('updateTicket', () => {
 
     expect(updatedTicket.requester).toBe('Ada Çalışan');
     expect(updatedTicket.status).toBe('In Progress');
+  });
+
+  test('deletes a ticket through the API accepting its empty 204 response', async () => {
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 204,
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    await expect(deleteTicket('42')).resolves.toBeUndefined();
+
+    expect(fetch).toHaveBeenCalledWith('/api/tickets/42', expect.objectContaining({
+      method: 'DELETE',
+    }));
   });
 });

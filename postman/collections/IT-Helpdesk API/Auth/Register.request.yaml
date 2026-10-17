@@ -1,0 +1,26 @@
+$kind: http-request
+name: Register
+method: POST
+url: '{{baseUrl}}/api/auth/register'
+order: 1000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "name": "Test Kullanıcı",
+      "email": "test@example.com",
+      "password": "Test1234!"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      if (pm.response.status === 201) {
+        const res = pm.response.json();
+        if (res.token) {
+          pm.environment.set('token', res.token);
+        }
+      }

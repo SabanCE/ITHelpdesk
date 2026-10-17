@@ -98,4 +98,63 @@ describe('TicketDetails', () => {
 
     expect(screen.queryByLabelText('Sorumlu BT personeli')).toBeNull();
   });
+
+  test('lets an administrator confirm ticket deletion', async () => {
+    const onDeleteTicket = vi.fn().mockResolvedValue({});
+    renderDetails({ isAdmin: true, onDeleteTicket });
+
+    expect(screen.getByRole('button', { name: 'Talebi sil' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Talebi sil' }));
+    expect(screen.getByRole('alert').textContent)
+      .toContain('durum geçmişi kalıcı olarak silinecek');
+    fireEvent.click(screen.getByRole('button', { name: 'Evet, talebi sil' }));
+
+    await waitFor(() => {
+      expect(onDeleteTicket).toHaveBeenCalledWith(ticket);
+    });
+  });
+
+  test('does not show ticket deletion to regular IT staff', () => {
+    renderDetails({ isAdmin: false });
+    expect(screen.queryByRole('button', { name: 'Talebi sil' })).toBeNull();
+  });
+
+  test('lets an assigned IT staff member release a ticket back to the queue', async () => {
+    const assignedTicket = { ...ticket, assignedTo: 3 };
+    const onUpdateTicket = vi.fn().mockResolvedValue({});
+
+    render(
+      <MemoryRouter initialEntries={['/tickets/42']}>
+        <Routes>
+          <Route
+            path="/tickets/:ticketId"
+            element={(
+              <TicketDetails
+                tickets={[assignedTicket]}
+                onUpdateTicket={onUpdateTicket}
+                isStaff
+                isAdmin={false}
+                currentUserId={3}
+                currentTime={Date.parse('2026-10-15T10:12:00.000Z')}
+              />
+            )}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'İşi bırak, kuyruğa al' }));
+
+    await waitFor(() => {
+      expect(onUpdateTicket).toHaveBeenCalledWith(assignedTicket, {
+        assignedTo: null,
+      });
+    });
+  });
+
+  test('disables the In Progress option for an unassigned ticket', () => {
+    renderDetails();
+
+    expect(screen.getByRole('option', { name: 'İşlemde' }).disabled).toBe(true);
+  });
 });

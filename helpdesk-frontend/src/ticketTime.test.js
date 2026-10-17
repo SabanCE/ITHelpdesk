@@ -11,6 +11,24 @@ describe('formatElapsedTime', () => {
       .toBe('12 dk');
   });
 
+  test('shows hours from 60 minutes up to 24 hours', () => {
+    const ticket = { createdAt, status: 'Open' };
+
+    expect(formatElapsedTime(ticket, Date.parse('2026-10-15T11:00:00.000Z')))
+      .toBe('1 saat');
+    expect(formatElapsedTime(ticket, Date.parse('2026-10-16T09:59:00.000Z')))
+      .toBe('23 saat');
+  });
+
+  test('shows days from 24 hours onward', () => {
+    const ticket = { createdAt, status: 'Open' };
+
+    expect(formatElapsedTime(ticket, Date.parse('2026-10-16T10:00:00.000Z')))
+      .toBe('1 gün');
+    expect(formatElapsedTime(ticket, Date.parse('2026-10-17T12:00:00.000Z')))
+      .toBe('2 gün');
+  });
+
   test('freezes elapsed minutes at the recorded resolution time', () => {
     const ticket = {
       createdAt,

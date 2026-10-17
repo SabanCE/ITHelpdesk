@@ -1,0 +1,3 @@
+$kind: collection
+name: IT-Helpdesk API
+description: IT Helpdesk projesi için API koleksiyonu. Backend Node.js/Express ile çalışır, port 3000.

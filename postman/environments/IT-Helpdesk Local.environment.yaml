@@ -1,0 +1,8 @@
+name: IT-Helpdesk Local
+values:
+  - key: baseUrl
+    value: 'http://localhost:3000'
+  - key: token
+    value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiZW1wbG95ZWUiLCJpYXQiOjE3OTIxNTc2MTQsImV4cCI6MTc5MjE4NjQxNCwic3ViIjoiOCJ9.WythmojREGq7o2VyXyFUmp-POi6qGuhEi1TBrBihg0I
+  - key: ticketId
+    value: '1'
